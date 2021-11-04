@@ -1,10 +1,10 @@
 import axios, { AxiosResponse } from 'axios';
-import * as dotenv from 'dotenv';
 import path from 'path';
 import Web3 from 'web3';
-dotenv.config();
+import TelegramBot from 'node-telegram-bot-api';
+import 'dotenv/config';
 
-const ORDER_TYPE = {
+const ORDER_TYPE: any = {
   BUY: 'BUY',
   SELL: 'SELL'
 };
@@ -50,11 +50,44 @@ class ToTheMoonService {
     }
   }
 
-  async swap(fromTokenAddress: string, toTokenAddress: string, amount: number): Promise<any> {
-    // const factory = contractInstance.methods.factory().call();
-    const factory = this.pancakeSwapContract.methods.factory().encodeABI();
+  async swap(
+    fromTokenAddress: string,
+    toTokenAddress: string,
+    amount: number,
+    currentPrice: number
+  ): Promise<any> {
+    const amountIn: number = amount;
+    const amountOutMin: number = amount * currentPrice * 0.95; // min amount receive
+    const path: string[] = [fromTokenAddress];
+    const to: string = toTokenAddress;
+    const deadline: Date = new Date();
+    const swapPayload = this.pancakeSwapContract.methods.swapExactTokensForTokens(
+      amountIn,
+      amountOutMin,
+      path,
+      to,
+      deadline
+    );
+    const encodedABI = swapPayload.encodeABI();
     // TODO:
   }
+}
+
+const getMsgFormatted = (order: Order, currentPrice: number): string => {
+  const poocoinTokenPrice = `${process.env.POOCOIN_URL}/${order.contractAddress}`;
+  return `🚀 *${ORDER_TYPE[order.type]}* [#${order.symbol}](${poocoinTokenPrice}) now 
+  Order price: ${order.price} $
+  Current price: ${currentPrice} $
+  Limit: ${order.amount}
+  Time: ${new Date()}`;
+};
+
+interface Order {
+  symbol: string;
+  contractAddress: string;
+  type: string;
+  price: number;
+  amount: number;
 }
 
 // const abi = require(path.join(__dirname, '../diem.json'));
@@ -63,25 +96,28 @@ class ToTheMoonService {
 // console.log(contractInstance)
 
 const main = async () => {
+  const token = `${process.env.TELEGRAM_BOT_TOKEN}`;
+  const groupChatId = `${process.env.GROUP_CHAT_ID}`;
+  const telegramBot: TelegramBot = new TelegramBot(token, { polling: true });
   try {
-    const orderBooks = [
+    const orderBooks: Order[] = [
       {
         symbol: 'PSB',
         type: ORDER_TYPE.SELL,
-        price: 1.3, // greater than this price,
+        price: 0.7, // greater than this price,
         contractAddress: '0x36bfbb1d5b3c9b336f3d64976599b6020ca805f1',
         amount: 100 // amount
       },
       {
         symbol: 'MONO',
         type: ORDER_TYPE.BUY,
-        price: 0.11, // less than this price
+        price: 0.2, // less than this price
         contractAddress: '0xd4099a517f2fbe8a730d2ecaad1d0824b75e084a',
         amount: 100
       }
     ];
     const watchingList: string[] = orderBooks.map((order) => order.contractAddress);
-    const services = new ToTheMoonService(watchingList);
+    const services: ToTheMoonService = new ToTheMoonService(watchingList);
     /** check contract address in order books */
     const isValidTokenPrice = await services.getAllTokenPriceInWatchingList();
     if (
@@ -93,9 +129,12 @@ const main = async () => {
     }
     const USDT_CONTRACT_ADDRESS =
       process.env.USDT_CONTRACT_ADDRESS || '0x55d398326f99059ff775485246999027b3197955';
-
-    setInterval(async () => {
+    let i = 1;
+    const myInterval = setInterval(async () => {
+      console.log('interval time', i);
+      i++;
       console.log('======================================================================');
+
       console.log(`Get token price at: ${new Date()}`);
       const listTokenPrice = await services.getAllTokenPriceInWatchingList();
       console.log(listTokenPrice);
@@ -108,8 +147,9 @@ const main = async () => {
       }, {});
       // console.log(`currentPrice >>> ${tokenPrice.data.price}`);
       // console.log(`orderPrice >>> ${orderBooks.price}`);
-      orderBooks.forEach((order) => {
-        const currentPrice = mappingSymbolToTokenPrice[order.symbol];
+      for (let i = orderBooks.length - 1; i >= 0; i--) {
+        const order: Order = orderBooks[i];
+        const currentPrice: number = mappingSymbolToTokenPrice[order.symbol];
         if (!currentPrice) return;
         if (order.type === ORDER_TYPE.BUY && currentPrice < order.price) {
           // TODO: swap
@@ -118,6 +158,10 @@ const main = async () => {
           console.log(`🚀 Buy ${order.symbol} now 
 Order price: ${order.price}
 Current price: ${currentPrice}`);
+          telegramBot.sendMessage(groupChatId, getMsgFormatted(order, currentPrice), {
+            parse_mode: 'Markdown'
+          });
+          orderBooks.splice(i, 1);
         } else if (order.type === ORDER_TYPE.SELL && currentPrice > order.price) {
           // TODO: swap
           // services.swap(USDT_CONTRACT_ADDRESS, order.contractAddress, order.amount);
@@ -125,8 +169,17 @@ Current price: ${currentPrice}`);
           console.log(`🚀 Sell ${order.symbol} now 
 Order price: ${order.price}
 Current price: ${currentPrice}`);
+          telegramBot.sendMessage(groupChatId, getMsgFormatted(order, currentPrice), {
+            parse_mode: 'Markdown'
+          });
+          orderBooks.splice(i, 1);
         }
-      });
+      }
+
+      if (orderBooks.length === 0) {
+        clearInterval(myInterval);
+      }
+      console.log(orderBooks);
     }, 5000);
   } catch (error) {
     console.error(error);
